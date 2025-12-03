@@ -8,22 +8,27 @@ import sanitize from 'sanitize-filename';
 import { Jimp, JimpMime } from '../jimp.js';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
-import { getConfigValue } from '../util.js';
+import { getConfigValue, invalidateFirefoxCache } from '../util.js';
 
 const thumbnailsEnabled = !!getConfigValue('thumbnails.enabled', true, 'boolean');
 const quality = Math.min(100, Math.max(1, parseInt(getConfigValue('thumbnails.quality', 95, 'number'))));
 const pngFormat = String(getConfigValue('thumbnails.format', 'jpg')).toLowerCase().trim() === 'png';
 
+/**
+ * @typedef {'bg' | 'avatar' | 'persona'} ThumbnailType
+ */
+
 /** @type {Record<string, number[]>} */
 export const dimensions = {
     'bg': getConfigValue('thumbnails.dimensions.bg', [160, 90]),
     'avatar': getConfigValue('thumbnails.dimensions.avatar', [96, 144]),
+    'persona': getConfigValue('thumbnails.dimensions.persona', [96, 144]),
 };
 
 /**
  * Gets a path to thumbnail folder based on the type.
  * @param {import('../users.js').UserDirectoryList} directories User directories
- * @param {'bg' | 'avatar'} type Thumbnail type
+ * @param {ThumbnailType} type Thumbnail type
  * @returns {string} Path to the thumbnails folder
  */
 function getThumbnailFolder(directories, type) {
@@ -36,6 +41,9 @@ function getThumbnailFolder(directories, type) {
         case 'avatar':
             thumbnailFolder = directories.thumbnailsAvatar;
             break;
+        case 'persona':
+            thumbnailFolder = directories.thumbnailsPersona;
+            break;
     }
 
     return thumbnailFolder;
@@ -44,7 +52,7 @@ function getThumbnailFolder(directories, type) {
 /**
  * Gets a path to the original images folder based on the type.
  * @param {import('../users.js').UserDirectoryList} directories User directories
- * @param {'bg' | 'avatar'} type Thumbnail type
+ * @param {ThumbnailType} type Thumbnail type
  * @returns {string} Path to the original images folder
  */
 function getOriginalFolder(directories, type) {
@@ -57,6 +65,9 @@ function getOriginalFolder(directories, type) {
         case 'avatar':
             originalFolder = directories.characters;
             break;
+        case 'persona':
+            originalFolder = directories.avatars;
+            break;
     }
 
     return originalFolder;
@@ -65,14 +76,14 @@ function getOriginalFolder(directories, type) {
 /**
  * Removes the generated thumbnail from the disk.
  * @param {import('../users.js').UserDirectoryList} directories User directories
- * @param {'bg' | 'avatar'} type Type of the thumbnail
+ * @param {ThumbnailType} type Type of the thumbnail
  * @param {string} file Name of the file
  */
 export function invalidateThumbnail(directories, type, file) {
     const folder = getThumbnailFolder(directories, type);
     if (folder === undefined) throw new Error('Invalid thumbnail type');
 
-    const pathToThumbnail = path.join(folder, file);
+    const pathToThumbnail = path.join(folder, sanitize(file));
 
     if (fs.existsSync(pathToThumbnail)) {
         fs.unlinkSync(pathToThumbnail);
@@ -82,7 +93,7 @@ export function invalidateThumbnail(directories, type, file) {
 /**
  * Generates a thumbnail for the given file.
  * @param {import('../users.js').UserDirectoryList} directories User directories
- * @param {'bg' | 'avatar'} type Type of the thumbnail
+ * @param {ThumbnailType} type Type of the thumbnail
  * @param {string} file Name of the file
  * @returns
  */
@@ -188,7 +199,7 @@ router.get('/', async function (request, response) {
             return response.sendStatus(400);
         }
 
-        if (!(type == 'bg' || type == 'avatar')) {
+        if (!(type === 'bg' || type === 'avatar' || type === 'persona')) {
             return response.sendStatus(400);
         }
 
@@ -211,6 +222,9 @@ router.get('/', async function (request, response) {
             const contentType = mime.lookup(pathToOriginalFile) || 'image/png';
             const originalFile = await fsPromises.readFile(pathToOriginalFile);
             response.setHeader('Content-Type', contentType);
+
+            invalidateFirefoxCache(pathToOriginalFile, request, response);
+
             return response.send(originalFile);
         }
 
@@ -227,6 +241,9 @@ router.get('/', async function (request, response) {
         const contentType = mime.lookup(pathToCachedFile) || 'image/jpeg';
         const cachedFile = await fsPromises.readFile(pathToCachedFile);
         response.setHeader('Content-Type', contentType);
+
+        invalidateFirefoxCache(file, request, response);
+
         return response.send(cachedFile);
     } catch (error) {
         console.error('Failed getting thumbnail', error);

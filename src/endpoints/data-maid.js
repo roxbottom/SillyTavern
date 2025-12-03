@@ -18,6 +18,7 @@ const sha256 = str => crypto.createHash('sha256').update(str).digest('hex');
  * @property {string[]} groupChats - List of loose group chats
  * @property {string[]} avatarThumbnails - List of loose avatar thumbnails
  * @property {string[]} backgroundThumbnails - List of loose background thumbnails
+ * @property {string[]} personaThumbnails - List of loose persona thumbnails
  * @property {string[]} chatBackups - List of chat backups
  * @property {string[]} settingsBackups - List of settings backups
  */
@@ -39,6 +40,7 @@ const sha256 = str => crypto.createHash('sha256').update(str).digest('hex');
  * @property {DataMaidSanitizedRecord[]} groupChats - List of sanitized loose group chats
  * @property {DataMaidSanitizedRecord[]} avatarThumbnails - List of sanitized loose avatar thumbnails
  * @property {DataMaidSanitizedRecord[]} backgroundThumbnails - List of sanitized loose background thumbnails
+ * @property {DataMaidSanitizedRecord[]} personaThumbnails - List of sanitized loose persona thumbnails
  * @property {DataMaidSanitizedRecord[]} chatBackups - List of sanitized chat backups
  * @property {DataMaidSanitizedRecord[]} settingsBackups - List of sanitized settings backups
  */
@@ -55,15 +57,24 @@ const sha256 = str => crypto.createHash('sha256').update(str).digest('hex');
  */
 
 /**
+ * @typedef {object} DataMaidMedia - The media object.
+ * @property {string} url - The media URL
+ */
+
+/**
  * @typedef {object} DataMaidChatMetadata - The chat metadata object.
  * @property {DataMaidFile[]} [attachments] - The array of attachments, if any.
+ * @property {string[]} [chat_backgrounds] - The array of chat background image links, if any.
  */
 
 /**
  * @typedef {object} DataMaidMessageExtra - The extra data object.
- * @property {string} [image] - The link to the image, if any.
- * @property {string[]} [image_swipes] - The links to the image swipes, if any.
- * @property {DataMaidFile} [file] - The file object, if any.
+ * @property {string} [image] - The link to the image, if any - DEPRECATED, use `media` instead.
+ * @property {string} [video] - The link to the video, if any - DEPRECATED, use `media` instead.
+ * @property {string[]} [image_swipes] - The links to the image swipes, if any - DEPRECATED, use `media` instead.
+ * @property {DataMaidMedia[]} [media] - The links to the media, if any.
+ * @property {DataMaidFile} [file] - The file object, if any - DEPRECATED, use `files` instead.
+ * @property {DataMaidFile[]} [files] - The array of file objects, if any.
  */
 
 /**
@@ -105,6 +116,7 @@ export class DataMaidService {
             groupChats: await this.#collectGroupChats(),
             avatarThumbnails: await this.#collectAvatarThumbnails(),
             backgroundThumbnails: await this.#collectBackgroundThumbnails(),
+            personaThumbnails: await this.#collectPersonaThumbnails(),
             chatBackups: await this.#collectChatBackups(),
             settingsBackups: await this.#collectSettingsBackups(),
         };
@@ -144,6 +156,7 @@ export class DataMaidService {
             groupChats: await Promise.all(report.groupChats.map(i => this.#sanitizeRecord(i, false))),
             avatarThumbnails: await Promise.all(report.avatarThumbnails.map(i => this.#sanitizeRecord(i, false))),
             backgroundThumbnails: await Promise.all(report.backgroundThumbnails.map(i => this.#sanitizeRecord(i, false))),
+            personaThumbnails: await Promise.all(report.personaThumbnails.map(i => this.#sanitizeRecord(i, false))),
             chatBackups: await Promise.all(report.chatBackups.map(i => this.#sanitizeRecord(i, false))),
             settingsBackups: await Promise.all(report.settingsBackups.map(i => this.#sanitizeRecord(i, false))),
         };
@@ -161,15 +174,35 @@ export class DataMaidService {
         const result = [];
 
         try {
-            const messages = await this.#parseAllChats(x => !!x?.extra?.image || Array.isArray(x?.extra?.image_swipes));
+            const messages = await this.#parseAllChats(x => !!x?.extra?.image || !!x?.extra?.video || Array.isArray(x?.extra?.image_swipes) || Array.isArray(x?.extra?.media));
             const knownImages = new Set();
             for (const message of messages) {
                 if (message?.extra?.image) {
                     knownImages.add(message.extra.image);
                 }
+                if (message?.extra?.video) {
+                    knownImages.add(message.extra.video);
+                }
                 if (Array.isArray(message?.extra?.image_swipes)) {
                     for (const swipe of message.extra.image_swipes) {
                         knownImages.add(swipe);
+                    }
+                }
+                if (Array.isArray(message?.extra?.media)) {
+                    for (const media of message.extra.media) {
+                        if (media?.url) {
+                            knownImages.add(media.url);
+                        }
+                    }
+                }
+            }
+            const metadata = await this.#parseAllMetadata(x => Array.isArray(x?.chat_backgrounds) && x.chat_backgrounds.length > 0);
+            for (const meta of metadata) {
+                if (Array.isArray(meta?.chat_backgrounds)) {
+                    for (const background of meta.chat_backgrounds) {
+                        if (background) {
+                            knownImages.add(background);
+                        }
                     }
                 }
             }
@@ -213,11 +246,18 @@ export class DataMaidService {
         const result = [];
 
         try {
-            const messages = await this.#parseAllChats(x => !!x?.extra?.file?.url);
+            const messages = await this.#parseAllChats(x => !!x?.extra?.file?.url || (Array.isArray(x?.extra?.files) && x.extra.files.length > 0));
             const knownFiles = new Set();
             for (const message of messages) {
                 if (message?.extra?.file?.url) {
                     knownFiles.add(message.extra.file.url);
+                }
+                if (Array.isArray(message?.extra?.files)) {
+                    for (const file of message.extra.files) {
+                        if (file?.url) {
+                            knownFiles.add(file.url);
+                        }
+                    }
                 }
             }
             const metadata = await this.#parseAllMetadata(x => Array.isArray(x?.attachments) && x.attachments.length > 0);
@@ -406,6 +446,34 @@ export class DataMaidService {
             }
         } catch (error) {
             console.error('[Data Maid] Error collecting background thumbnails:', error);
+        }
+
+        return result;
+    }
+
+    /**
+     * Collects loose persona thumbnails from the provided directories.
+     * @returns {Promise<string[]>} List of paths to loose persona thumbnails
+     */
+    async #collectPersonaThumbnails() {
+        const result = [];
+
+        try {
+            const knownPersonas = new Set();
+            const personas = await fs.promises.readdir(this.directories.avatars, { withFileTypes: true });
+            for (const file of personas) {
+                if (file.isFile()) {
+                    knownPersonas.add(file.name);
+                }
+            }
+            const personaThumbnails = await fs.promises.readdir(this.directories.thumbnailsPersona, { withFileTypes: true });
+            for (const file of personaThumbnails) {
+                if (file.isFile() && !knownPersonas.has(file.name)) {
+                    result.push(path.join(this.directories.thumbnailsPersona, file.name));
+                }
+            }
+        } catch (error) {
+            console.error('[Data Maid] Error collecting persona thumbnails:', error);
         }
 
         return result;

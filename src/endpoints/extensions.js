@@ -3,9 +3,14 @@ import fs from 'node:fs';
 
 import express from 'express';
 import sanitize from 'sanitize-filename';
-import { default as simpleGit } from 'simple-git';
+import { CheckRepoActions, default as simpleGit } from 'simple-git';
 
 import { PUBLIC_DIRECTORIES } from '../constants.js';
+
+/**
+ * @type {Partial<import('simple-git').SimpleGitOptions>}
+ */
+const OPTIONS = Object.freeze({ timeout: { block: 5 * 60 * 1000 } });
 
 /**
  * This function extracts the extension information from the manifest file.
@@ -30,7 +35,7 @@ async function getManifest(extensionPath) {
  * @returns {Promise<Object>} - Returns the extension information as an object
  */
 async function checkIfRepoIsUpToDate(extensionPath) {
-    const git = simpleGit({ baseDir: extensionPath });
+    const git = simpleGit({ baseDir: extensionPath, ...OPTIONS });
     await git.fetch('origin');
     const currentBranch = await git.branch();
     const currentCommitHash = await git.revparse(['HEAD']);
@@ -71,6 +76,7 @@ router.post('/install', async (request, response) => {
     }
 
     try {
+        // No timeout for cloning, as it may take a while depending on the repo size
         const git = simpleGit();
 
         // make sure the third-party directory exists
@@ -144,7 +150,11 @@ router.post('/update', async (request, response) => {
         }
 
         const { isUpToDate, remoteUrl } = await checkIfRepoIsUpToDate(extensionPath);
-        const git = simpleGit({ baseDir: extensionPath });
+        const git = simpleGit({ baseDir: extensionPath, ...OPTIONS });
+        const isRepo = await git.checkIsRepo(CheckRepoActions.IS_REPO_ROOT);
+        if (!isRepo) {
+            throw new Error(`Directory is not a Git repository at ${extensionPath}`);
+        }
         const currentBranch = await git.branch();
         if (!isUpToDate) {
             await git.pull('origin', currentBranch.current);
@@ -157,10 +167,9 @@ router.post('/update', async (request, response) => {
         const shortCommitHash = fullCommitHash.slice(0, 7);
 
         return response.send({ shortCommitHash, extensionPath, isUpToDate, remoteUrl });
-
     } catch (error) {
-        console.error('Updating custom content failed', error);
-        return response.status(500).send(`Server Error: ${error.message}`);
+        console.error('Updating extension failed', error);
+        return response.status(500).send('Internal Server Error. Check the server logs for more details.');
     }
 });
 
@@ -184,7 +193,7 @@ router.post('/branches', async (request, response) => {
             return response.status(404).send(`Directory does not exist at ${extensionPath}`);
         }
 
-        const git = simpleGit({ baseDir: extensionPath });
+        const git = simpleGit({ baseDir: extensionPath, ...OPTIONS });
         // Unshallow the repository if it is shallow
         const isShallow = await git.revparse(['--is-shallow-repository']) === 'true';
         if (isShallow) {
@@ -229,7 +238,7 @@ router.post('/switch', async (request, response) => {
             return response.status(404).send(`Directory does not exist at ${extensionPath}`);
         }
 
-        const git = simpleGit({ baseDir: extensionPath });
+        const git = simpleGit({ baseDir: extensionPath, ...OPTIONS });
         const branches = await git.branchLocal();
 
         if (String(branch).startsWith('origin/')) {
@@ -336,9 +345,13 @@ router.post('/version', async (request, response) => {
             return response.status(404).send(`Directory does not exist at ${extensionPath}`);
         }
 
-        const git = simpleGit({ baseDir: extensionPath });
+        const git = simpleGit({ baseDir: extensionPath, ...OPTIONS });
         let currentCommitHash;
         try {
+            const isRepo = await git.checkIsRepo(CheckRepoActions.IS_REPO_ROOT);
+            if (!isRepo) {
+                throw new Error(`Directory is not a Git repository at ${extensionPath}`);
+            }
             currentCommitHash = await git.revparse(['HEAD']);
         } catch (error) {
             // it is not a git repo, or has no commits yet, or is a bare repo

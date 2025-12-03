@@ -17,8 +17,9 @@ import mime from 'mime-types';
 import { default as simpleGit } from 'simple-git';
 import chalk from 'chalk';
 import bytes from 'bytes';
-import { LOG_LEVELS } from './constants.js';
+import { LOG_LEVELS, CHAT_COMPLETION_SOURCES } from './constants.js';
 import { serverDirectory } from './server-directory.js';
+import { isFirefox } from './express-common.js';
 
 /**
  * Parsed config object.
@@ -422,6 +423,31 @@ export function clientRelativePath(root, inputPath) {
     }
 
     return inputPath.slice(root.length).split(path.sep).join('/');
+}
+
+/**
+ * Returns a name that is unique among the names that exist.
+ * @param {string} name The name to check.
+ * @param {{ (name: string): boolean; }} exists Function to check if name exists.
+ * @returns {string} A unique name.
+ */
+export function getUniqueName(name, exists) {
+    let i = 1;
+    let baseName = name;
+    while (exists(name)) {
+        name = `${baseName} (${i})`;
+        i++;
+    }
+    return name;
+}
+
+/**
+ * Provides safe replacements for characters in filenames. Intended for use with sanitize() from the sanitize-filename package.
+ * @param {string} char Character to sanitize
+ * @returns {string} Safe replacement character
+ */
+export function sanitizeSafeCharacterReplacements(char) {
+    return '_';
 }
 
 /**
@@ -1212,4 +1238,76 @@ export function getRequestURL(request) {
         return request.url;
     }
     throw new TypeError('Invalid request type');
+}
+
+/**
+ * Flattens and simplifies a JSON schema to be compatible with the strict requirements
+ * of Google's Generative AI API.
+ * @param {object} schema The JSON schema to process.
+ * @param {string} api The API source.
+ * @returns {object} The flattened and simplified schema.
+ */
+export function flattenSchema(schema, api) {
+    if (!schema || typeof schema !== 'object') {
+        return schema;
+    }
+
+    const schemaCopy = structuredClone(schema);
+    const isGoogleApi = [CHAT_COMPLETION_SOURCES.VERTEXAI, CHAT_COMPLETION_SOURCES.MAKERSUITE].includes(api);
+
+    const definitions = schemaCopy.$defs || {};
+    delete schemaCopy.$defs;
+
+    function resolve(obj, parents = []) {
+        if (!obj || typeof obj !== 'object') {
+            return obj;
+        }
+        if (Array.isArray(obj)) {
+            return obj.map(item => resolve(item, parents));
+        }
+
+        // 1. Resolve $refs first
+        if (obj.$ref?.startsWith('#/$defs/')) {
+            const defName = obj.$ref.split('/').pop();
+            if (parents.includes(defName)) return {}; // Prevent infinite recursion
+            if (definitions[defName]) {
+                return resolve(structuredClone(definitions[defName]), [...parents, defName]);
+            }
+            return {}; // Broken reference
+        }
+
+        // 2. Process the object's properties
+        const result = {};
+        for (const key in obj) {
+            if (!Object.prototype.hasOwnProperty.call(obj, key)) continue;
+
+            // For Google, filter unsupported top-level keywords
+            if (isGoogleApi && ['default', 'additionalProperties', 'exclusiveMinimum', 'propertyNames'].includes(key)) {
+                continue;
+            }
+
+            result[key] = resolve(obj[key], parents);
+        }
+
+        return result;
+    }
+
+    const flattenedSchema = resolve(schemaCopy);
+    delete flattenedSchema.$schema;
+    return flattenedSchema;
+}
+
+/**
+ * If the file is an image, and the request's user agent matches Firefox, then the response's headers are set to invalidate the cache.
+ * Without this, Firefox ignores updated images even after a refresh.
+ * https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cache-Control
+ * @param {string} file File path
+ * @param {import('express').Request} request Request object
+ * @param {import('express').Response} response Response object
+ */
+export function invalidateFirefoxCache(file, request, response) {
+    const mimeType = isFirefox(request) && mime.lookup(file);
+    if (mimeType && mimeType.startsWith('image/')) {
+        response.setHeader('Cache-Control', 'must-understand, no-store');
+    }
 }
