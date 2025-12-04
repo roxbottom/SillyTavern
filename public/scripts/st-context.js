@@ -57,10 +57,14 @@ import {
     hideSwipeButtons,
     deleteMessage,
     refreshSwipeButtons,
+    swipe,
     isSwipingAllowed,
+    swipeState,
     ensureMessageMediaIsArray,
     getMediaDisplay,
     getMediaIndex,
+    scrollChatToBottom,
+    scrollOnMediaLoad,
 } from '../script.js';
 import {
     extension_settings,
@@ -95,7 +99,7 @@ import { getGlobalVariable, getLocalVariable, setGlobalVariable, setLocalVariabl
 import { convertCharacterBook, getWorldInfoPrompt, loadWorldInfo, reloadEditor, saveWorldInfo, updateWorldInfoList } from './world-info.js';
 import { ChatCompletionService, TextCompletionService } from './custom-request.js';
 import { ConnectionManagerRequestService } from './extensions/shared.js';
-import { updateReasoningUI, parseReasoningFromString } from './reasoning.js';
+import { updateReasoningUI, parseReasoningFromString, getReasoningTemplateByName } from './reasoning.js';
 import { IGNORE_SYMBOL } from './constants.js';
 
 export function getContext() {
@@ -215,13 +219,17 @@ export function getContext() {
         ensureMessageMediaIsArray,
         getMediaDisplay,
         getMediaIndex,
+        scrollChatToBottom,
+        scrollOnMediaLoad,
         swipe: {
             left: swipe_left,
             right: swipe_right,
+            to: swipe,
             show: showSwipeButtons,
             hide: hideSwipeButtons,
             refresh: refreshSwipeButtons,
-            isAllowed: () => isSwipingAllowed,
+            isAllowed: isSwipingAllowed,
+            state: () => swipeState,
         },
         variables: {
             local: {
@@ -251,6 +259,7 @@ export function getContext() {
         ConnectionManagerRequestService,
         updateReasoningUI,
         parseReasoningFromString,
+        getReasoningTemplateByName,
         unshallowCharacter,
         unshallowGroupMembers,
         openThirdPartyExtensionMenu,
